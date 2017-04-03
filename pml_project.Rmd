@@ -1,0 +1,138 @@
+---
+title: "Practical Machine Learning: Prediction Assignment Writeup"
+author: "Ramana Sonti"
+date: "4/1/2017"
+output: html_document
+---
+
+##### SYNOPSIS: 
+The goal of this project is to predict the exercise activity of six individual participants from the data recoderded by the accelerometers embedded in the devices worn on their belt, forearm, arm, and dumbell. The participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The datasets for the project have been sourced from  http://groupware.les.inf.puc-rio.br/har.
+
+##### Prediction Procedure: 
+The prediction proceure involves the following steps 
+1. Preparing datasets for training, testing, and validation
+2. Selecting features from the training set
+3. Model building - cross validation
+4. Model selection and evaluation
+5. Apply the model to test set and refine
+6. Apply the model to validation set to predict the outcome in 20 different test cases
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+##### Preparing the datasets for training, testing and validation:
+As it was taking too long to train the models on the entire training dataset on my macbook air (4-core) I have decided to split the trainging dataset into training (60%) and testing (40%) and use the testing dataset supplied for validation.
+``` {r echo=TRUE, cache=TRUE}
+library(plyr)
+library(rpart)
+library(randomForest)
+library(gbm)
+library(caret)
+library(stats)
+library(MASS)
+
+# parallel processing config
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+set.seed(131)
+fitControl <- trainControl(method = "cv", number = 3, allowParallel = TRUE)
+
+# trainging and testing data sources
+sourceTrainURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+sourceTestURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+sourceTrainFile <- "pml-training.csv"
+sourceTestFile <- "pml-testing.csv"
+
+# downlod the training data file if it doesn't exist in the current directory
+if (!file.exists(sourceTrainFile)) {
+  download.file(sourceTrainURL, destfile = sourceTrainFile, mode = "w")
+}
+
+# downlod the testing data file if it doesn't exist in the current directory
+if (!file.exists(sourceTestFile)) {
+  download.file(sourceTestURL, destfile = sourceTestFile, mode = "w")
+}
+
+# read training dataset
+pml.training <- read.csv("pml-training.csv", sep = ",", na.strings = c("NA", ""), header = T)
+
+# columns with NA
+cnames.training.na <- colnames(pml.training)[colSums(is.na(pml.training)) > 0]
+
+# Keep only the predictors that have possible influence on the outcome
+pml.training2 <- pml.training[,!(names(pml.training) %in% cnames.training.na)]   # pick columns with no NA
+pml.training2 <- pml.training2[,-(1:7)]   # drop first 7 columns as they have no relevance
+
+set.seed(131)
+trainPart <- createDataPartition(y=pml.training$classe, p=0.6, list=FALSE)
+pml.training2 <- pml.training2[trainPart, ]
+pml.testing2 <- pml.training2[-trainPart, ]
+
+# read pml-testing.csv for validation
+pml.validation <- read.csv("pml-testing.csv", sep = ",", na.strings = c("NA", ""), header = T)
+cnames.validation.na <- colnames(pml.validation)[colSums(is.na(pml.validation)) > 0]
+pml.validation <- pml.validation[,!(names(pml.validation) %in% cnames.validation.na)]
+pml.validation <- pml.validation[,-(1:7)] 
+
+print("Features selected for predicting the outcome: ", quote = FALSE)
+colnames(pml.training2)
+```
+##### Model Building:
+The columns with NAs and the first seven columns that have no influence on the outcome have been removed from the datasets. The training dataset has been used with the four major modelling techniques to generate the models in each case. A 3-fold cross validation method has been used with defaults for all other parameters.
+``` {r echo=TRUE, cache=TRUE}
+
+# Train the models
+set.seed(131)
+fitControl <- trainControl(method = "cv", number = 3, allowParallel = TRUE)
+
+# Build models for rf, gbm, lda, and rpart
+system.time(rf.fit <- train(classe ~ ., data=pml.training2,method="rf", trControl = fitControl))
+system.time(gbm.fit <- train(classe ~ .,data=pml.training2,method="gbm", trControl = fitControl))
+system.time(lda.fit <- train(classe ~ .,data=pml.training2,method="lda", trControl = fitControl))
+system.time(rpart.fit <- train(classe ~ .,data=pml.training2,method="rpart", trControl = fitControl))
+
+stopCluster(cluster)
+registerDoSEQ()
+```
+##### Testing and Evaluating the Models:
+The testing set separated from the original training set has been used for predictions with all four models and a comparison of accuracy results has been produced by putting the predictions through confusionMatrix.
+``` {r echo=TRUE, cache=TRUE}
+rf.fit.pred <- predict(rf.fit, pml.testing2)
+gbm.fit.pred <- predict(gbm.fit, pml.testing2)
+lda.fit.pred <- predict(lda.fit, pml.testing2)
+rpart.fit.pred <- predict(rpart.fit, pml.testing2)
+
+rf.fit.accuracy <- confusionMatrix(rf.fit.pred, pml.testing2$classe)[3]$overall[1]
+gbm.fit.accuracy <- confusionMatrix(gbm.fit.pred, pml.testing2$classe)[3]$overall[1]
+lda.fit.accuracy <- confusionMatrix(lda.fit.pred, pml.testing2$classe)[3]$overall[1]
+rpart.fit.accuracy <- confusionMatrix(rpart.fit.pred, pml.testing2$classe)[3]$overall[1]
+
+data.frame( model = c("rf", "gbm", "lda", "rpart"), accuracy = c(rf.fit.accuracy, gbm.fit.accuracy, lda.fit.accuracy, rpart.fit.accuracy))
+```
+##### Model Selction and Validation:
+Out of the four models selected for study, rf and gbm have produced the most accuracy with rf being at the top. For all 20 tests in the validation set, both rf and gbm predicted the same outcome.  
+``` {r echo=TRUE, cache=TRUE}
+# plots, comparison, out of sample error estimates
+
+predict(rf.fit, pml.validation)
+predict(gbm.fit, pml.validation)
+predict(lda.fit, pml.validation)
+predict(rpart.fit, pml.validation)
+
+print("Test Results from Random Forest model with the most accuracy:", quote = FALSE)
+data.frame(classe = predict(rf.fit, newdata = pml.validation), problem_id = pml.validation$problem_id)
+rf.fit.pred.validation <- predict(rf.fit, newdata = pml.validation)
+
+pml.validation2 <- data.frame(pml.validation, classe = predict(rf.fit, newdata = pml.validation))
+confusionMatrix(rf.fit.pred.validation, pml.validation2$classe)[3]$overall[1]
+rf.fit$finalModel
+```
+``` {r echo=TRUE, cache=TRUE}
+plot(rf.fit$finalModel)
+```
+
+##### Conclusion:
+The training and test datasets provided have been used to fit frour different models discussed in the course. Out if the four models, evaluated, Random Forests and gbm have prodecued the models with accuracy over 97% with random forest being at the top. Both rf and gbm have predicted the same results on 20 test cases that were set aside for validation. 
